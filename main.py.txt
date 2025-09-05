@@ -1,0 +1,161 @@
+# main.py
+# Очень простой Telegram-бот на виртуальные очки.
+# Как запустить локально:
+# 1) Установите зависимости: pip install -r requirements.txt
+# 2) Установите переменную окружения BOT_TOKEN, затем: python main.py
+# Не используйте этот бот для реальных денег — только очки.
+
+import os
+import time
+import secrets
+import sqlite3
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+DB_FILE = "data.db"
+TOKEN = os.getenv("BOT_TOKEN")  # в Render мы зададим эту переменную окружения
+
+# ----- простая работа с БД ----------
+def ensure_db():
+    con = sqlite3.connect(DB_FILE)
+    cur = con.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        points INTEGER DEFAULT 1000,
+        created_at INTEGER
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS bets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        game TEXT,
+        stake INTEGER,
+        result TEXT,
+        delta INTEGER,
+        created_at INTEGER
+    )
+    """)
+    con.commit()
+    con.close()
+
+def get_user(user_id, username=""):
+    con = sqlite3.connect(DB_FILE)
+    cur = con.cursor()
+    cur.execute("SELECT user_id, username, points FROM users WHERE user_id=?", (user_id,))
+    r = cur.fetchone()
+    if not r:
+        cur.execute("INSERT INTO users(user_id, username, created_at) VALUES(?,?,?)",
+                    (user_id, username or "", int(time.time())))
+        con.commit()
+        cur.execute("SELECT user_id, username, points FROM users WHERE user_id=?", (user_id,))
+        r = cur.fetchone()
+    con.close()
+    return {"user_id": r[0], "username": r[1], "points": r[2]}
+
+def change_points(user_id, delta):
+    con = sqlite3.connect(DB_FILE)
+    cur = con.cursor()
+    cur.execute("UPDATE users SET points = points + ? WHERE user_id=?", (delta, user_id))
+    con.commit()
+    cur.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
+    pts = cur.fetchone()[0]
+    con.close()
+    return pts
+
+# ----- команды бота ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    get_user(u.id, u.username or "")
+    await update.message.reply_text(
+        "Привет! Это развлекательная игра на виртуальные очки.\n"
+        "Нет денег и призов реальной ценности. 18+.\n\n"
+        "Команды:\n"
+        "/balance — показать баланс\n"
+        "/bet coin <ставка> <heads|tails> — ставка монетка\n"
+        "/leaderboard — топ игроков\n"
+        "/rules — правила\n"
+    )
+
+async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Правила:\n"
+        "- Играем только на виртуальные очки (нет денег).\n"
+        "- Ставка от 10 до 500 очков.\n"
+        "- Не используйте реальные деньги.\n"
+        "- Тайм-ауты и лимиты  — для честной игры."
+    )
+
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    user = get_user(u.id, u.username or "")
+    await update.message.reply_text(f"Ваш баланс: {user['points']} очков")
+
+async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    args = context.args
+    if len(args) < 3:
+        return await update.message.reply_text("Использование: /bet coin <ставка> <heads|tails>")
+    game = args[0].lower()
+    try:
+        stake = int(args[1])
+    except:
+        return await update.message.reply_text("Ставка должна быть числом.")
+    if stake < 10 or stake > 500:
+        return await update.message.reply_text("Ставка должна быть между 10 и 500 очков.")
+    user = get_user(u.id, u.username or "")
+    if stake > user['points']:
+        return await update.message.reply_text("У вас недостаточно очков.")
+    if game == "coin":
+        pick = args[2].lower()
+        if pick not in ("heads", "tails"):
+            return await update.message.reply_text("Укажите heads или tails.")
+        flip = "heads" if secrets.randbits(1) == 0 else "tails"
+        if pick == flip:
+            delta = stake  # выигрыш: +stake (итог — удвоение)
+            result = f"win ({flip})"
+        else:
+            delta = -stake
+            result = f"lose ({flip})"
+    else:
+        return await update.message.reply_text("Доступная игра: coin")
+
+    new_pts = change_points(u.id, delta)
+    con = sqlite3.connect(DB_FILE)
+    con.execute("INSERT INTO bets(user_id, game, stake, result, delta, created_at) VALUES(?,?,?,?,?,?)",
+                (u.id, game, stake, result, delta, int(time.time())))
+    con.commit()
+    con.close()
+    sign = "+" if delta >= 0 else ""
+    await update.message.reply_text(f"Результат: {result}. Изменение: {sign}{delta}. Баланс: {new_pts} очков")
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    con = sqlite3.connect(DB_FILE)
+    cur = con.cursor()
+    rows = cur.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 10").fetchall()
+    con.close()
+    if not rows:
+        return await update.message.reply_text("Топ пуст.")
+    text = "Топ игроков:\n" + "\n".join(f"{i+1}. @{(r[0] or 'anon')} — {r[1]} очков" for i,r in enumerate(rows))
+    await update.message.reply_text(text)
+
+# ----- точка входа -------
+def main():
+    if not TOKEN:
+        print("Ошибка: переменная окружения BOT_TOKEN не задана.")
+        return
+    ensure_db()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("rules", rules))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("bet", bet))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    # Запуск polling (бот будет постоянно работать, ожидая сообщений)
+    print("Bot started (polling)...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
