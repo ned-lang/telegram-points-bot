@@ -1,21 +1,35 @@
 # main.py
-# Очень простой Telegram-бот на виртуальные очки.
-# Как запустить локально:
-# 1) Установите зависимости: pip install -r requirements.txt
-# 2) Установите переменную окружения BOT_TOKEN, затем: python main.py
-# Не используйте этот бот для реальных денег — только очки.
-
+# Telegram bot (polling) + small Flask webserver so Render sees an open port.
+# Убедитесь, что в requirements.txt есть python-telegram-bot и Flask.
 import os
 import time
 import secrets
 import sqlite3
+import asyncio
+from threading import Thread
+
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# ----- Конфигурация -----
 DB_FILE = "data.db"
-TOKEN = os.getenv("BOT_TOKEN")  # в Render мы зададим эту переменную окружения
+TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.environ.get("PORT", 5000))  # Render задаёт PORT автоматически
 
-# ----- простая работа с БД ----------
+# ----- Простейший веб-сервер Flask (чтобы Render видел порт) -----
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Bot is running (polling)!"
+
+def run_web():
+    # Запускаем Flask на 0.0.0.0:PORT
+    # use_reloader=False чтобы не было двойного запуска в некоторых окружениях
+    app_web.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+
+# ----- Простая sqlite БД для очков -----
 def ensure_db():
     con = sqlite3.connect(DB_FILE)
     cur = con.cursor()
@@ -65,8 +79,8 @@ def change_points(user_id, delta):
     con.close()
     return pts
 
-# ----- команды бота ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----- Команды бота -----
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     get_user(u.id, u.username or "")
     await update.message.reply_text(
@@ -79,21 +93,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/rules — правила\n"
     )
 
-async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Правила:\n"
         "- Играем только на виртуальные очки (нет денег).\n"
         "- Ставка от 10 до 500 очков.\n"
-        "- Не используйте реальные деньги.\n"
-        "- Тайм-ауты и лимиты  — для честной игры."
+        "- Не используйте реальные деньги."
     )
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     user = get_user(u.id, u.username or "")
     await update.message.reply_text(f"Ваш баланс: {user['points']} очков")
 
-async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def bet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     args = context.args
     if len(args) < 3:
@@ -114,7 +127,7 @@ async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await update.message.reply_text("Укажите heads или tails.")
         flip = "heads" if secrets.randbits(1) == 0 else "tails"
         if pick == flip:
-            delta = stake  # выигрыш: +stake (итог — удвоение)
+            delta = stake
             result = f"win ({flip})"
         else:
             delta = -stake
@@ -131,7 +144,7 @@ async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sign = "+" if delta >= 0 else ""
     await update.message.reply_text(f"Результат: {result}. Изменение: {sign}{delta}. Баланс: {new_pts} очков")
 
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     con = sqlite3.connect(DB_FILE)
     cur = con.cursor()
     rows = cur.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 10").fetchall()
@@ -141,22 +154,28 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "Топ игроков:\n" + "\n".join(f"{i+1}. @{(r[0] or 'anon')} — {r[1]} очков" for i,r in enumerate(rows))
     await update.message.reply_text(text)
 
-# ----- точка входа -------
-def main():
+# ----- Точка входа для бота -----
+async def run_bot():
     if not TOKEN:
         print("Ошибка: переменная окружения BOT_TOKEN не задана.")
         return
     ensure_db()
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("rules", rules))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("bet", bet))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
-    # Запуск polling (бот будет постоянно работать, ожидая сообщений)
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("rules", rules_command))
+    app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CommandHandler("bet", bet_command))
+    app.add_handler(CommandHandler("leaderboard", leaderboard_command))
     print("Bot started (polling)...")
-    app.run_polling()
+    await app.run_polling()
+
+def main():
+    # Запускаем Flask в отдельном потоке, чтобы система видела открытый порт
+    web_thread = Thread(target=run_web, daemon=True)
+    web_thread.start()
+
+    # Запускаем телеграм-бота в основном потоке (asyncio)
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
     main()
-
