@@ -156,26 +156,23 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ----- Точка входа для бота -----
 async def run_bot():
-    if not TOKEN:
-        print("Ошибка: переменная окружения BOT_TOKEN не задана.")
-        return
-    ensure_db()
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("rules", rules_command))
-    app.add_handler(CommandHandler("balance", balance_command))
-    app.add_handler(CommandHandler("bet", bet_command))
-    app.add_handler(CommandHandler("leaderboard", leaderboard_command))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("bet", bet))
+    app.add_handler(CommandHandler("balance", balance))
+
     print("Bot started (polling)...")
     await app.run_polling()
 
 def main():
-    # Запускаем Flask в отдельном потоке, чтобы Render видел открытый порт
+    # Запускаем Flask в отдельном потоке
     web_thread = Thread(target=run_web, daemon=True)
     web_thread.start()
 
-    # Запускаем телеграм-бота в основном потоке (asyncio)
-    asyncio.run(run_bot())
+    # Запускаем Telegram-бота (без asyncio.run)
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(run_bot())
 
 if __name__ == "__main__":
     main()
+
