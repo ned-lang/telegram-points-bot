@@ -170,7 +170,7 @@ async def run_bot():
     await app.run_polling()
 
 def main():
-    # Запускаем Flask в отдельном потоке, чтобы система видела открытый порт
+    # Запускаем Flask в отдельном потоке, чтобы Render видел открытый порт
     web_thread = Thread(target=run_web, daemon=True)
     web_thread.start()
 
