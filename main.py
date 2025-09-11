@@ -155,6 +155,18 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(text)
 
 # ----- Точка входа для бота -----
+# Команда /start
+async def start(update, context):
+    await update.message.reply_text("Привет! Я твой бот-казино 🎰. Используй /bet для ставки или /balance для проверки баланса.")
+
+# Команда /bet
+async def bet(update, context):
+    await update.message.reply_text("Ты сделал ставку! (логика игры будет здесь)")
+
+# Команда /balance
+async def balance(update, context):
+    await update.message.reply_text("Твой баланс: 1000 очков 💰")
+
 async def run_bot():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -175,4 +187,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
