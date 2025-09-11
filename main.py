@@ -1,28 +1,23 @@
 import os
 import sqlite3
-import asyncio
-from threading import Thread
-from flask import Flask
+from flask import Flask, request
+from telegram import Update
 from telegram.ext import Application, CommandHandler
 
-# === Flask для Render ===
+# === Flask (для Render) ===
 app_web = Flask(__name__)
 
-@app_web.route("/")
-def index():
-    return "Бот работает ✅"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
-
-# === Telegram Bot ===
+# === Конфигурация ===
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ Переменная окружения BOT_TOKEN не задана!")
 
+WEBHOOK_PATH = f"/webhook/{TOKEN}"   # секретный путь
+WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
+
 DB_FILE = "casino.db"
 
+# === База данных ===
 def ensure_db():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
@@ -33,18 +28,17 @@ def ensure_db():
     conn.commit()
     conn.close()
 
-# --- обработчики команд ---
-async def start(update, context):
+# === Команды бота ===
+async def start(update: Update, context):
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, ?)", (user_id, 1000))
     conn.commit()
     conn.close()
-    await update.message.reply_text("Привет! 🎰 Добро пожаловать в казино-бота!\n"
-                                    "Используй /bet для ставки или /balance для проверки баланса.")
+    await update.message.reply_text("Привет 🎰!\nИспользуй /bet для ставки или /balance для проверки баланса.")
 
-async def bet(update, context):
+async def bet(update: Update, context):
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
@@ -57,9 +51,8 @@ async def bet(update, context):
         balance = row[0]
 
     if balance < 100:
-        await update.message.reply_text("Недостаточно средств для ставки 💸")
+        await update.message.reply_text("Недостаточно средств 💸")
     else:
-        # простая логика: 50% выигрыш/проигрыш
         import random
         if random.choice([True, False]):
             balance += 100
@@ -74,7 +67,7 @@ async def bet(update, context):
     conn.commit()
     conn.close()
 
-async def balance(update, context):
+async def balance(update: Update, context):
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
@@ -82,31 +75,37 @@ async def balance(update, context):
     row = cur.fetchone()
     conn.close()
     if row:
-        await update.message.reply_text(f"💰 Твой баланс: {row[0]}")
+        await update.message.reply_text(f"💰 Баланс: {row[0]}")
     else:
-        await update.message.reply_text("Ты ещё не зарегистрирован. Введи /start.")
+        await update.message.reply_text("Ты ещё не зарегистрирован. Используй /start.")
 
-# --- запуск бота ---
-async def run_bot():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("bet", bet))
-    app.add_handler(CommandHandler("balance", balance))
+# === Telegram Application ===
+application = Application.builder().token(TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("bet", bet))
+application.add_handler(CommandHandler("balance", balance))
 
-    print("Bot started (polling)...")
-    await app.run_polling()
+# === Flask routes ===
+@app_web.route("/")
+def index():
+    return "Бот работает ✅"
 
-def main():
-    ensure_db()
+@app_web.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "ok"
 
-    # Flask в отдельном потоке
-    web_thread = Thread(target=run_web, daemon=True)
-    web_thread.start()
-
-    # Telegram-бот в основном потоке
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(run_bot())
-
+# === Запуск ===
 if __name__ == "__main__":
-    main()
+    ensure_db()
+    # Устанавливаем webhook при запуске
+    import asyncio
+    async def set_webhook():
+        await application.bot.set_webhook(WEBHOOK_URL)
+        print(f"Webhook установлен: {WEBHOOK_URL}")
+
+    asyncio.run(set_webhook())
+
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
